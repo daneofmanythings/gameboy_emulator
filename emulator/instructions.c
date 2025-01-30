@@ -209,8 +209,15 @@ num_cycles LD_L_H(gameboy_t* gb, opcode op8) {
   return 1;
 }
 
-num_cycles LD_A_n(gameboy_t* gb, opcode op8);
-num_cycles LD_B_n(gameboy_t* gb, opcode op8);
+num_cycles LD_A_n(gameboy_t* gb, opcode op8) {
+  //
+  return 2;
+}
+
+num_cycles LD_B_n(gameboy_t* gb, opcode op8) {
+  //
+  return 2;
+}
 num_cycles LD_C_n(gameboy_t* gb, opcode op8);
 num_cycles LD_D_n(gameboy_t* gb, opcode op8);
 num_cycles LD_E_n(gameboy_t* gb, opcode op8);
@@ -254,6 +261,8 @@ num_cycles ADD_A_D(gameboy_t* gb, opcode op8);
 num_cycles ADD_A_E(gameboy_t* gb, opcode op8);
 num_cycles ADD_A_H(gameboy_t* gb, opcode op8);
 num_cycles ADD_A_L(gameboy_t* gb, opcode op8);
+num_cycles ADD_A_n(gameboy_t* gb, opcode op8);
+num_cycles ADD_A__HL(gameboy_t* gb, opcode op8);
 
 num_cycles LD__HL_n(gameboy_t* gb, opcode op8) {
   memory_at mdest = MEMORY_AT(HL);

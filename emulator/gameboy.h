@@ -4,9 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define SCREEN_WIDTH 256
-#define SCREEN_HEIGHT 256
-#define SCREEN_SIZE ((SCREEN_WIDTH) * (SCREEN_HEIGHT))
+#include "../display.h"
+#include "../events/thread_events.h"
+
 #define MEMORY_SIZE 0xFFFF
 
 /*
@@ -56,16 +56,16 @@ typedef struct {
 } cpu_t;
 
 typedef struct {
-  uint8_t r;
-  uint8_t g;
-  uint8_t b;
-} dot_t;
-
-typedef struct {
   uint8_t memory[MEMORY_SIZE];
-  dot_t screen[SCREEN_SIZE];
+  pixel_color_t screen[SCREEN_SIZE];
+  uint32_t clock_speed;
+  thread_event_t clock_tick;
   cpu_t cpu;
 } gameboy_t;
+
+bool gameboy_init(gameboy_t* gb);
+bool gameboy_load_rom(gameboy_t* gb, const char* rom_path);
+void* gameboy_run_thread(void* args);
 
 typedef uint8_t opcode;
 typedef uint8_t num_cycles;
@@ -143,8 +143,35 @@ typedef uint16_t* register16_p;
 #define OAM_END 0xFE9F
 #define OAM_SIZE ((OAM_END) - (OAM_START))
 
-typedef num_cycles (*instruction_f)(gameboy_t* gb, opcode op8);
+typedef struct {
+  uint8_t lcdc;
+  uint8_t char_data[CHAR_DATA_SIZE];
+  uint8_t oam[OAM_SIZE];
+} display_driver_t;
 
+typedef uint16_t dot_data;
+
+typedef struct {
+  dot_data dots[16];
+  bool is_16_bit;
+} character_datum_t;
+
+typedef struct {
+  uint8_t y;
+  uint8_t x;
+  uint8_t character_code;
+  uint8_t atribute_data;
+} obj_display_data_t;
+
+void* display_driver_thread(void* args);
+
+typedef struct {
+  gameboy_t* gb;
+} gameboy_thread_args_t;
+void* gameboy_run_thread(void* args);
+num_cycles gameboy_emulate_cycle(gameboy_t* gb);
+
+typedef num_cycles (*instruction_f)(gameboy_t* gb, opcode op8);
 instruction_f fetch_instruction_from_opcode(opcode oc8);
 
 /*
@@ -1425,7 +1452,7 @@ num_cycles LDHL_SP_e(gameboy_t* gb, opcode op8);
  *
  * Flags:
  *
- *        Z - Set if result is 0
+ *        Z - Set if result is 0; otherwise reset
  *
  *        H - Set if there is a carry from bit 3, otherwise reset
  *
@@ -1446,7 +1473,7 @@ num_cycles ADD_A_B(gameboy_t* gb, opcode op8);
  *
  * Flags:
  *
- *        Z - Set if result is 0
+ *        Z - Set if result is 0; otherwise reset
  *
  *        H - Set if there is a carry from bit 3, otherwise reset
  *
@@ -1467,7 +1494,7 @@ num_cycles ADD_A_C(gameboy_t* gb, opcode op8);
  *
  * Flags:
  *
- *        Z - Set if result is 0
+ *        Z - Set if result is 0; otherwise reset
  *
  *        H - Set if there is a carry from bit 3, otherwise reset
  *
@@ -1488,7 +1515,7 @@ num_cycles ADD_A_D(gameboy_t* gb, opcode op8);
  *
  * Flags:
  *
- *        Z - Set if result is 0
+ *        Z - Set if result is 0; otherwise reset
  *
  *        H - Set if there is a carry from bit 3, otherwise reset
  *
@@ -1509,7 +1536,7 @@ num_cycles ADD_A_E(gameboy_t* gb, opcode op8);
  *
  * Flags:
  *
- *        Z - Set if result is 0
+ *        Z - Set if result is 0; otherwise reset
  *
  *        H - Set if there is a carry from bit 3, otherwise reset
  *
@@ -1530,7 +1557,7 @@ num_cycles ADD_A_H(gameboy_t* gb, opcode op8);
  *
  * Flags:
  *
- *        Z - Set if result is 0
+ *        Z - Set if result is 0; otherwise reset
  *
  *        H - Set if there is a carry from bit 3, otherwise reset
  *
@@ -1543,5 +1570,677 @@ num_cycles ADD_A_H(gameboy_t* gb, opcode op8);
  * Opcode: 0x85
  */
 num_cycles ADD_A_L(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADD A, n
+ *
+ * Action: A <- A + n
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 2
+ *
+ * Opcode: 0xC6
+ */
+num_cycles ADD_A_n(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADD A, (HL)
+ *
+ * Action: A <- A + (HL)
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 2
+ *
+ * Opcode: 0x86
+ */
+num_cycles ADD_A__HL(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADC A, B
+ *
+ * Action: A <- A + B + CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x88
+ */
+num_cycles ADC_A_B(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADC A, C
+ *
+ * Action: A <- A + C + CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x89
+ */
+num_cycles ADC_A_C(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADC A, D
+ *
+ * Action: A <- A + D + CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x8A
+ */
+num_cycles ADC_A_D(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADC A, E
+ *
+ * Action: A <- A + E + CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x8B
+ */
+num_cycles ADC_A_E(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADC A, H
+ *
+ * Action: A <- A + H + CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x8C
+ */
+num_cycles ADC_A_H(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADC A, L
+ *
+ * Action: A <- A + L + CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x8D
+ */
+num_cycles ADC_A_L(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADC A, n
+ *
+ * Action: A <- A + n + CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 2
+ *
+ * Opcode: 0xCE
+ */
+num_cycles ADC_A_n(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: ADC A, (HL)
+ *
+ * Action: A <- A + (HL) + CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0
+ *
+ *        H - Set if there is a carry from bit 3, otherwise reset
+ *
+ *        N - Reset
+ *
+ *        CY - Set if there is a carry from bit 7, otherwise reset
+ *
+ * Cycles: 2
+ *
+ * Opcode: 0x8E
+ */
+num_cycles ADC_A__HL(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: SUB A, B
+ *
+ * Action: A <- A - B
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x90
+ */
+num_cycles SUB_A_B(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SUB A, C
+ *
+ * Action: A <- A - C
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x91
+ */
+num_cycles SUB_A_C(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SUB A, D
+ *
+ * Action: A <- A - D
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x92
+ */
+num_cycles SUB_A_D(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SUB A, E
+ *
+ * Action: A <- A - E
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x93
+ */
+num_cycles SUB_A_E(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SUB A, H
+ *
+ * Action: A <- A - H
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x94
+ */
+num_cycles SUB_A_H(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SUB A, L
+ *
+ * Action: A <- A - L
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x95
+ */
+num_cycles SUB_A_L(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SUB A, n
+ *
+ * Action: A <- A - n
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 2
+ *
+ * Opcode: 0xD6
+ */
+num_cycles SUB_A_n(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: SUB A, (HL)
+ *
+ * Action: A <- A - (HL)
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 2
+ *
+ * Opcode: 0x96
+ */
+num_cycles SUB_A__HL(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: SBC A, B
+ *
+ * Action: A <- A - B - CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x98
+ */
+num_cycles SBC_A_B(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SBC A, C
+ *
+ * Action: A <- A - C - CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x99
+ */
+num_cycles SBC_A_C(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SBC A, D
+ *
+ * Action: A <- A - D - CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x9A
+ */
+num_cycles SBC_A_D(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SBC A, E
+ *
+ * Action: A <- A - E - CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x9B
+ */
+num_cycles SBC_A_E(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SBC A, H
+ *
+ * Action: A <- A - H - CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x9C
+ */
+num_cycles SBC_A_H(gameboy_t* gb, opcode op9);
+
+/*
+ * Instruction: SBC A, L
+ *
+ * Action: A <- A - L - CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0x9D
+ */
+num_cycles SBC_A_L(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: SBC A, n
+ *
+ * Action: A <- A - n - CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 2
+ *
+ * Opcode: 0xDE
+ */
+num_cycles SBC_A_n(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: SBC A, (HL)
+ *
+ * Action: A <- A - (HL) - CY
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set if there is a borrow from bit 4, otherwise reset
+ *
+ *        N - Set
+ *
+ *        CY - Set if there is a borrow, otherwise reset
+ *
+ * Cycles: 2
+ *
+ * Opcode: 0x9E
+ */
+num_cycles SBC_A__HL(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: AND B
+ *
+ * Action: A <- A & B
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set
+ *
+ *        N - Reset
+ *
+ *        CY - Reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0xA0
+ */
+num_cycles AND_B(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: AND C
+ *
+ * Action: A <- A & C
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set
+ *
+ *        N - Reset
+ *
+ *        CY - Reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0xA1
+ */
+num_cycles AND_C(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: AND D
+ *
+ * Action: A <- A & D
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set
+ *
+ *        N - Reset
+ *
+ *        CY - Reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0xA2
+ */
+num_cycles AND_D(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: AND E
+ *
+ * Action: A <- A & E
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set
+ *
+ *        N - Reset
+ *
+ *        CY - Reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0xA3
+ */
+num_cycles AND_E(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: AND H
+ *
+ * Action: A <- A & H
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set
+ *
+ *        N - Reset
+ *
+ *        CY - Reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0xA4
+ */
+num_cycles AND_H(gameboy_t* gb, opcode op8);
+
+/*
+ * Instruction: AND L
+ *
+ * Action: A <- A & L
+ *
+ * Flags:
+ *
+ *        Z - Set if result is 0; otherwise reset
+ *
+ *        H - Set
+ *
+ *        N - Reset
+ *
+ *        CY - Reset
+ *
+ * Cycles: 1
+ *
+ * Opcode: 0xA5
+ */
+num_cycles AND_L(gameboy_t* gb, opcode op8);
 
 #endif // !DEBUG
